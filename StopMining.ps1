@@ -1,13 +1,43 @@
-# Log file path (same as miner script)
-$logFilePath = "C:\Miners\Logs\mining_log.txt"
+# ========== StopMining.ps1 ==========
+$logTime = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
 
-# Stop the miner process
-$minerProcess = Get-Process -Name "xmrig" -ErrorAction SilentlyContinue
+if ($IsWindows) {
+    $logFile = "C:\Miners\Logs\mining_log.txt"
+    Add-Content $logFile "`n[$logTime] === Stopping Miner ==="
 
-if ($minerProcess) {
-    Write-Output "[$(Get-Date)] Stopping XMRig miner..." | Tee-Object -FilePath $logFilePath -Append
-    Stop-Process -Name "xmrig" -Force
-    Write-Output "[$(Get-Date)] Miner stopped successfully." | Tee-Object -FilePath $logFilePath -Append
+    # Stop xmrig.exe if running
+    $xmrig = Get-Process -Name "xmrig" -ErrorAction SilentlyContinue
+    if ($xmrig) {
+        $xmrig | Stop-Process -Force
+        Add-Content $logFile "[$logTime] xmrig.exe process killed."
+    } else {
+        Add-Content $logFile "[$logTime] xmrig.exe not found."
+    }
+
+    # Optional: Delete miner files
+    $folder = "C:\Miners"
+    if (Test-Path $folder) {
+        try {
+            Remove-Item -Path $folder -Recurse -Force -ErrorAction Stop
+            Add-Content $logFile "[$logTime] Miner folder deleted."
+        } catch {
+            Add-Content $logFile "[$logTime] Failed to delete miner folder: $_"
+        }
+    }
+
+} elseif ($IsLinux) {
+    $logFile = "$HOME/xmrig/build/stop_log.txt"
+    echo "`n[$logTime] === Stopping Miner on Android ===" >> $logFile
+
+    # Kill xmrig process
+    pkill -f xmrig
+    echo "[$logTime] xmrig process killed (if running)." >> $logFile
+
+    # Optional: Delete miner build
+    if [ -d "$HOME/xmrig" ]; then
+        rm -rf $HOME/xmrig
+        echo "[$logTime] XMRig folder deleted." >> $logFile
+    fi
 } else {
-    Write-Output "[$(Get-Date)] No XMRig process found to stop." | Tee-Object -FilePath $logFilePath -Append
+    Write-Host "Unsupported system. This script works only on Windows and Termux Linux."
 }
