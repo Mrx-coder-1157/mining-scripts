@@ -11,17 +11,17 @@ if ($IsWindows) {
         $xmrig | Stop-Process -Force
         Add-Content $logFile "[$logTime] xmrig.exe process killed."
     } else {
-        Add-Content $logFile "[$logTime] xmrig.exe not found."
+        Add-Content $logFile "[$logTime] xmrig.exe not running."
     }
 
-    # Optional: Delete miner files
+    # Delete miner folder completely
     $folder = "C:\Miners"
     if (Test-Path $folder) {
         try {
             Remove-Item -Path $folder -Recurse -Force -ErrorAction Stop
-            Add-Content $logFile "[$logTime] Miner folder deleted."
+            Write-Host "[$logTime] Miner folder deleted."
         } catch {
-            Add-Content $logFile "[$logTime] Failed to delete miner folder: $_"
+            Write-Host "[$logTime] Failed to delete miner folder: $_"
         }
     }
 
@@ -31,13 +31,13 @@ if ($IsWindows) {
 
     # Kill xmrig process
     pkill -f xmrig
-    echo "[$logTime] xmrig process killed (if running)." >> $logFile
+    echo "[$logTime] xmrig process killed." >> $logFile
 
-    # Optional: Delete miner build
-    if [ -d "$HOME/xmrig" ]; then
-        rm -rf $HOME/xmrig
-        echo "[$logTime] XMRig folder deleted." >> $logFile
-    fi
+    # Delete xmrig folder
+    if (Test-Path "$HOME/xmrig") {
+        Remove-Item -Recurse -Force "$HOME/xmrig"
+        echo "[$logTime] xmrig folder deleted." >> $logFile
+    }
 } else {
-    Write-Host "Unsupported system. This script works only on Windows and Termux Linux."
+    Write-Host "Unsupported system. This script works only on Windows and Termux (Linux)."
 }
